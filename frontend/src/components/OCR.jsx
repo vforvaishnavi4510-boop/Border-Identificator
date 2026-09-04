@@ -1,6 +1,4 @@
-
-import { useEffect, useRef, useState } from "react";
-import { createWorker } from "tesseract.js";
+import { useEffect, useState } from "react";
 
 function OCR({ image }) {
   const [ocrText, setOcrText] = useState("");
@@ -8,147 +6,44 @@ function OCR({ image }) {
   const [ocrConfidence, setOcrConfidence] = useState(0);
   const [errorMessage, setErrorMessage] = useState("");
 
-  const workerRef = useRef(null);
+  // ==========================================
+  // ML STATE
+  // ==========================================
 
-  // =========================================================
-  // CREATE TESSERACT WORKER
-  // =========================================================
+  const [mlAnalysis, setMlAnalysis] = useState(null);
+  const [mlDocumentType, setMlDocumentType] = useState("");
+  const [mlProcessingTime, setMlProcessingTime] = useState(null);
 
-  const getWorker = async () => {
-    if (workerRef.current) {
-      return workerRef.current;
+  // ==========================================
+  // CONVERT DATA URL TO FILE
+  // ==========================================
+
+  const dataURLtoFile = (dataUrl, filename) => {
+    const arr = dataUrl.split(",");
+    const mime = arr[0].match(/:(.*?);/)[1];
+
+    const bstr = atob(arr[1]);
+
+    let n = bstr.length;
+    const u8arr = new Uint8Array(n);
+
+    while (n--) {
+      u8arr[n] = bstr.charCodeAt(n);
     }
 
-    console.log("CREATING TESSERACT WORKER...");
-
-    const worker = await createWorker("eng");
-
-    workerRef.current = worker;
-
-    console.log("TESSERACT WORKER READY");
-
-    return worker;
-  };
-
-  // =========================================================
-  // IMAGE PREPROCESSING
-  // =========================================================
-
-  const preprocessImage = (image) => {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-
-      img.onload = () => {
-        try {
-          console.log("PREPROCESSING IMAGE...");
-
-          const canvas = document.createElement("canvas");
-
-          const ctx = canvas.getContext("2d", {
-            willReadFrequently: true,
-          });
-
-          if (!ctx) {
-            reject(
-              new Error("Could not create canvas context")
-            );
-            return;
-          }
-
-          // Keep original resolution
-          canvas.width = img.width;
-          canvas.height = img.height;
-
-          // Draw image
-          ctx.drawImage(
-            img,
-            0,
-            0,
-            canvas.width,
-            canvas.height
-          );
-
-          const imageData = ctx.getImageData(
-            0,
-            0,
-            canvas.width,
-            canvas.height
-          );
-
-          const data = imageData.data;
-
-          // =================================================
-          // GRAYSCALE + MILD CONTRAST
-          // =================================================
-
-          for (let i = 0; i < data.length; i += 4) {
-            const r = data[i];
-            const g = data[i + 1];
-            const b = data[i + 2];
-
-            // Convert to grayscale
-            let gray =
-              0.299 * r +
-              0.587 * g +
-              0.114 * b;
-
-            // Mild contrast enhancement
-            gray =
-              (gray - 128) * 1.15 + 128;
-
-            // Keep value between 0 and 255
-            gray = Math.max(
-              0,
-              Math.min(255, gray)
-            );
-
-            data[i] = gray;
-            data[i + 1] = gray;
-            data[i + 2] = gray;
-          }
-
-          ctx.putImageData(
-            imageData,
-            0,
-            0
-          );
-
-          console.log(
-            "IMAGE PREPROCESSING COMPLETE"
-          );
-
-          // Return processed image
-          resolve(
-            canvas.toDataURL("image/png")
-          );
-
-        } catch (error) {
-          reject(error);
-        }
-      };
-
-      img.onerror = () => {
-        reject(
-          new Error(
-            "Could not load image for preprocessing"
-          )
-        );
-      };
-
-      img.src = image;
+    return new File([u8arr], filename, {
+      type: mime,
     });
   };
 
-  // =========================================================
+  // ==========================================
   // CLEAN OCR TEXT
-  // =========================================================
+  // ==========================================
 
   const cleanOCRText = (text) => {
     if (!text) {
       return "";
     }
-
-    console.log("CLEANING OCR TEXT...");
 
     const lines = text
       .split("\n")
@@ -162,16 +57,10 @@ function OCR({ image }) {
       line = line.replace(/\s+/g, " ");
 
       // Remove repeated garbage symbols
-      line = line.replace(
-        /[|~`^]{2,}/g,
-        ""
-      );
+      line = line.replace(/[|~`^]{2,}/g, "");
 
-      // Remove long sequences of underscores
-      line = line.replace(
-        /_{3,}/g,
-        ""
-      );
+      // Remove long underscores
+      line = line.replace(/_{3,}/g, "");
 
       // Remove unusual symbols
       line = line.replace(
@@ -185,33 +74,19 @@ function OCR({ image }) {
         continue;
       }
 
-      // =====================================================
-      // CHECK USEFUL CHARACTERS
-      // =====================================================
+      // Useful characters
+      const usefulCharacters = line.replace(
+        /[^a-zA-Z0-9]/g,
+        ""
+      );
 
-      const usefulCharacters =
-        line.replace(
-          /[^a-zA-Z0-9]/g,
-          ""
-        );
-
-      // Ignore extremely short garbage
       if (usefulCharacters.length < 2) {
         continue;
       }
 
-      // =====================================================
-      // USEFUL CHARACTER RATIO
-      // =====================================================
-
+      // Remove extremely bad lines
       const usefulRatio =
-        usefulCharacters.length /
-        line.length;
-
-      /*
-        Ignore a line when it contains very
-        little useful information.
-      */
+        usefulCharacters.length / line.length;
 
       if (
         usefulRatio < 0.30 &&
@@ -220,28 +95,19 @@ function OCR({ image }) {
         continue;
       }
 
-      // =====================================================
-      // REMOVE REPEATED CHARACTERS
-      // =====================================================
-
+      // Remove repeated characters
       line = line.replace(
         /(.)\1{5,}/g,
         "$1"
       );
 
-      // =====================================================
-      // REMOVE EXCESSIVE PUNCTUATION
-      // =====================================================
-
+      // Remove excessive punctuation
       line = line.replace(
         /[.,:;|]{4,}/g,
         " "
       );
 
-      line = line.replace(
-        /\s+/g,
-        " "
-      );
+      line = line.replace(/\s+/g, " ");
 
       line = line.trim();
 
@@ -250,10 +116,7 @@ function OCR({ image }) {
       }
     }
 
-    // =====================================================
-    // REMOVE DUPLICATE LINES
-    // =====================================================
-
+    // Remove duplicate lines
     const finalLines = [];
 
     for (const line of cleanedLines) {
@@ -270,136 +133,235 @@ function OCR({ image }) {
     return finalLines.join("\n").trim();
   };
 
-  // =========================================================
-  // RUN OCR
-  // =========================================================
+  // ==========================================
+  // RUN OCR + ML
+  // ==========================================
 
   const runOCR = async () => {
     if (!image) {
       return;
     }
 
+    const startTime = performance.now();
+
     try {
       setOcrLoading(true);
+
+      // Clear previous results
       setOcrText("");
       setOcrConfidence(0);
       setErrorMessage("");
 
-      console.log(
-        "================================"
+      // Clear previous ML result
+      setMlAnalysis(null);
+      setMlDocumentType("");
+      setMlProcessingTime(null);
+
+      console.log("");
+      console.log("================================");
+      console.log("🚀 OCR + ML STARTED");
+      console.log("================================");
+
+      // ========================================
+      // CREATE IMAGE FILE
+      // ========================================
+
+      const imageFile = dataURLtoFile(
+        image,
+        "document.jpg"
       );
 
-      console.log("OCR STARTED");
-
       console.log(
-        "================================"
+        "Image size:",
+        (imageFile.size / 1024).toFixed(2),
+        "KB"
       );
 
-      // =====================================================
-      // STEP 1 - PREPROCESS IMAGE
-      // =====================================================
+      // ========================================
+      // CREATE FORM DATA
+      // ========================================
 
-      const processedImage =
-        await preprocessImage(image);
+      const formData = new FormData();
 
-      // =====================================================
-      // STEP 2 - CREATE WORKER
-      // =====================================================
-
-      const worker =
-        await getWorker();
-
-      // =====================================================
-      // STEP 3 - RUN TESSERACT
-      // =====================================================
-
-      console.log(
-        "RUNNING TESSERACT..."
+      formData.append(
+        "document",
+        imageFile
       );
 
-      const result =
-        await worker.recognize(
-          processedImage
+      // ========================================
+      // SEND TO NODE
+      // ========================================
+
+      console.log(
+        "📡 Sending image to Node server..."
+      );
+
+      const response = await fetch(
+        "http://localhost:5000/api/capture",
+        {
+          method: "POST",
+          body: formData,
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(
+          `Server returned ${response.status}`
         );
+      }
 
-      // =====================================================
-      // STEP 4 - GET RAW TEXT
-      // =====================================================
+      const result = await response.json();
+
+      console.log("");
+      console.log("📦 RESPONSE FROM NODE");
+      console.log("--------------------------------");
+      console.log(result);
+      console.log("--------------------------------");
+
+      if (!result.success) {
+        throw new Error(
+          result.message ||
+            "Document processing failed"
+        );
+      }
+
+      // ========================================
+      // GET OCR TEXT
+      // ========================================
 
       const rawText =
-        result.data.text || "";
+        result.text || "";
 
-      console.log(
-        "RAW OCR RESULT:"
-      );
-
+      console.log("");
+      console.log("📄 RAW PADDLEOCR TEXT");
+      console.log("--------------------------------");
       console.log(rawText);
+      console.log("--------------------------------");
 
-      // =====================================================
-      // STEP 5 - GET CONFIDENCE
-      // =====================================================
+      // ========================================
+      // OCR CONFIDENCE
+      // ========================================
 
       const confidence =
-        Number(result.data.confidence) || 0;
+        Number(result.confidence) || 0;
 
       setOcrConfidence(
         Math.round(confidence)
       );
 
       console.log(
-        "OCR CONFIDENCE:",
-        confidence
+        "OCR Confidence:",
+        confidence.toFixed(2) + "%"
       );
 
-      // =====================================================
-      // STEP 6 - CLEAN TEXT
-      // =====================================================
+      // ========================================
+      // CLEAN OCR TEXT
+      // ========================================
 
       const cleanedText =
         cleanOCRText(rawText);
 
-      console.log(
-        "CLEANED OCR RESULT:"
+      console.log("");
+      console.log("🧹 CLEANED TEXT");
+      console.log("--------------------------------");
+      console.log(cleanedText);
+      console.log("--------------------------------");
+
+      setOcrText(
+        cleanedText ||
+          "No readable text detected."
       );
 
-      console.log(cleanedText);
+      // ========================================
+      // GET ML RESULT
+      // ========================================
+
+      console.log("");
+      console.log("🤖 ML ANALYSIS");
+      console.log("--------------------------------");
+      console.log(result.mlAnalysis);
+      console.log("--------------------------------");
+
+      setMlAnalysis(
+        result.mlAnalysis || null
+      );
+
+      // ========================================
+      // GET ML DOCUMENT TYPE
+      // ========================================
+
+      console.log(
+        "📄 ML Document Type:",
+        result.mlDocumentType
+      );
+
+      setMlDocumentType(
+        result.mlDocumentType || ""
+      );
+
+      // ========================================
+      // GET ML PROCESSING TIME
+      // ========================================
+
+      console.log(
+        "⏱️ ML Processing Time:",
+        result.mlProcessingTime
+      );
+
+      setMlProcessingTime(
+        result.mlProcessingTime ?? null
+      );
+
+      // ========================================
+      // TOTAL TIME
+      // ========================================
+
+      const endTime =
+        performance.now();
+
+      const totalTime =
+        (endTime - startTime) / 1000;
+
+      console.log("");
+      console.log(
+        `⏱️ TOTAL OCR + ML TIME: ${totalTime.toFixed(
+          2
+        )} seconds`
+      );
 
       console.log(
         "================================"
       );
-
-      // =====================================================
-      // STEP 7 - SHOW RESULT
-      // =====================================================
-
-      if (cleanedText.length > 0) {
-        setOcrText(cleanedText);
-      } else {
-        setOcrText(
-          "No readable text detected. Please scan the document again."
-        );
-      }
-
+      console.log(
+        "✅ OCR + ML COMPLETED"
+      );
+      console.log(
+        "================================");
     } catch (error) {
       console.error(
-        "OCR ERROR:",
+        "❌ OCR + ML ERROR:",
         error
       );
 
       setErrorMessage(
-        "OCR failed. Please try scanning the document again."
+        error.message ||
+          "Document processing failed. Please try scanning again."
       );
 
       setOcrText("");
 
+      // Clear ML result if processing failed
+      setMlAnalysis(null);
+      setMlDocumentType("");
+      setMlProcessingTime(null);
     } finally {
       setOcrLoading(false);
     }
   };
 
-  // =========================================================
-  // AUTOMATIC OCR WHEN IMAGE CHANGES
-  // =========================================================
+  // ==========================================
+  // AUTOMATIC OCR + ML
+  // ==========================================
 
   useEffect(() => {
     if (!image) {
@@ -409,30 +371,9 @@ function OCR({ image }) {
     runOCR();
   }, [image]);
 
-  // =========================================================
-  // CLEANUP TESSERACT WORKER
-  // =========================================================
-
-  useEffect(() => {
-    return () => {
-      if (workerRef.current) {
-        workerRef.current
-          .terminate()
-          .catch((error) => {
-            console.error(
-              "WORKER TERMINATION ERROR:",
-              error
-            );
-          });
-
-        workerRef.current = null;
-      }
-    };
-  }, []);
-
-  // =========================================================
+  // ==========================================
   // UI
-  // =========================================================
+  // ==========================================
 
   return (
     <div
@@ -449,12 +390,12 @@ function OCR({ image }) {
           marginTop: 0,
         }}
       >
-        🔎 OCR Result
+        🔎 PaddleOCR Result
       </h2>
 
-      {/* =====================================================
+      {/* ======================================
           LOADING
-      ====================================================== */}
+      ====================================== */}
 
       {ocrLoading && (
         <div
@@ -482,15 +423,15 @@ function OCR({ image }) {
               fontSize: "14px",
             }}
           >
-            Enhancing image and
-            extracting text
+            OCR and tampering detection are
+            running...
           </p>
         </div>
       )}
 
-      {/* =====================================================
+      {/* ======================================
           OCR RESULT
-      ====================================================== */}
+      ====================================== */}
 
       {!ocrLoading && ocrText && (
         <>
@@ -542,9 +483,92 @@ function OCR({ image }) {
         </>
       )}
 
-      {/* =====================================================
+      {/* ======================================
+          ML RESULT
+      ====================================== */}
+
+      {!ocrLoading && mlAnalysis && (
+        <div
+          style={{
+            marginTop: "25px",
+            padding: "20px",
+            background: "#0e1117",
+            borderRadius: "10px",
+            border: "1px solid #303846",
+          }}
+        >
+          <h2
+            style={{
+              marginTop: 0,
+            }}
+          >
+            🤖 Tampering Detection
+          </h2>
+
+          {mlDocumentType && (
+            <div
+              style={{
+                marginBottom: "15px",
+              }}
+            >
+              <strong>
+                Document Type:
+              </strong>{" "}
+              {mlDocumentType}
+            </div>
+          )}
+
+          {mlProcessingTime !== null && (
+            <div
+              style={{
+                marginBottom: "15px",
+              }}
+            >
+              <strong>
+                ML Processing Time:
+              </strong>{" "}
+              {mlProcessingTime} ms
+            </div>
+          )}
+
+          <div
+            style={{
+              marginTop: "15px",
+            }}
+          >
+            <strong>
+              ML Analysis:
+            </strong>
+
+            <pre
+              style={{
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                background: "#181d27",
+                padding: "15px",
+                marginTop: "10px",
+                borderRadius: "8px",
+                lineHeight: "1.5",
+                fontSize: "14px",
+                color: "#e8edf5",
+                overflowX: "auto",
+              }}
+            >
+              {typeof mlAnalysis === "string"
+                ? mlAnalysis
+                : JSON.stringify(
+                    mlAnalysis,
+                    null,
+                    2
+                  )}
+            </pre>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================
           NO TEXT
-      ====================================================== */}
+      ====================================== */}
 
       {!ocrLoading &&
         !ocrText &&
@@ -558,9 +582,9 @@ function OCR({ image }) {
           </p>
         )}
 
-      {/* =====================================================
+      {/* ======================================
           ERROR
-      ====================================================== */}
+      ====================================== */}
 
       {errorMessage && (
         <div
@@ -575,9 +599,9 @@ function OCR({ image }) {
         </div>
       )}
 
-      {/* =====================================================
-          RUN OCR AGAIN
-      ====================================================== */}
+      {/* ======================================
+          RUN AGAIN
+      ====================================== */}
 
       {!ocrLoading && image && (
         <button
@@ -599,4 +623,3 @@ function OCR({ image }) {
 }
 
 export default OCR;
-

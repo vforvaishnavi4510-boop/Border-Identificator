@@ -21,6 +21,16 @@ function App() {
         filename: result.filename || "Document",
         text: result.text || "",
         confidence: Math.round(result.confidence || 0),
+        documentType: result.documentType || "Unknown",
+        riskScore: result.riskScore ?? 0,
+        status: result.status || "Completed",
+        checks: result.checks || {},
+        warnings: result.warnings || [],
+
+        // ML data
+        mlAnalysis: result.mlAnalysis || null,
+        mlDocumentType: result.mlDocumentType || "",
+        mlProcessingTime: result.mlProcessingTime || 0,
       };
 
       // Add new document without deleting previous documents
@@ -30,8 +40,10 @@ function App() {
       ]);
 
       setUploadStatus(
-        "✅ Document uploaded and OCR completed"
+        `✅ Document verified: ${newDocument.documentType} (${newDocument.status})`
       );
+
+      return result;
 
     } catch (error) {
       console.error("Upload error:", error);
@@ -39,17 +51,16 @@ function App() {
       setUploadStatus(
         "❌ Failed to upload document"
       );
+
+      throw error;
     }
   };
 
   return (
     <div>
-      <CameraScanner
-        onCapture={handleCapture}
-      />
+      <CameraScanner onCapture={handleCapture} />
 
       {/* STATUS */}
-
       {uploadStatus && (
         <div
           style={{
@@ -63,7 +74,6 @@ function App() {
       )}
 
       {/* ALL DOCUMENTS */}
-
       {documents.length > 0 && (
         <div
           style={{
@@ -71,56 +81,62 @@ function App() {
             margin: "30px auto",
           }}
         >
-          <h2>
-            📄 Uploaded Documents
-          </h2>
+          <h2>📄 Uploaded Documents History</h2>
 
-          {documents.map((document, index) => (
-            <div
-              key={document.id}
-              style={{
-                marginTop: "20px",
-                padding: "20px",
-                background: "#181d27",
-                borderRadius: "12px",
-                color: "white",
-              }}
-            >
-              <h3>
-                Document {index + 1}
-              </h3>
+          {documents.map((document, index) => {
+            const isSafe = document.riskScore <= 30;
+            const isWarning = document.riskScore > 30 && document.riskScore <= 65;
+            const badgeColor = isSafe ? "#22c55e" : isWarning ? "#f59e0b" : "#ef4444";
 
-              <p>
-                <strong>File:</strong>{" "}
-                {document.filename}
-              </p>
+            return (
+              <div
+                key={document.id}
+                style={{
+                  marginTop: "20px",
+                  padding: "20px",
+                  background: "#181d27",
+                  borderRadius: "14px",
+                  color: "white",
+                  borderLeft: `5px solid ${badgeColor}`,
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+                  <h3 style={{ margin: 0 }}>
+                    Document {index + 1}: {document.documentType}
+                  </h3>
+                  <div style={{ background: badgeColor, color: isWarning ? "#0f172a" : "#fff", padding: "4px 12px", borderRadius: "999px", fontSize: "12px", fontWeight: "bold" }}>
+                    {document.status} (Risk: {document.riskScore})
+                  </div>
+                </div>
 
-              <p>
-                <strong>OCR Confidence:</strong>{" "}
-                {document.confidence}%
-              </p>
+                <div style={{ marginTop: "12px", display: "flex", gap: "20px", flexWrap: "wrap", fontSize: "14px", color: "#94a3b8" }}>
+                  <span><strong>File:</strong> {document.filename}</span>
+                  <span><strong>OCR Confidence:</strong> {document.confidence}%</span>
+                  <span><strong>Rules Passed:</strong> {Object.values(document.checks).filter(Boolean).length}/{Object.keys(document.checks).length || 1}</span>
+                </div>
 
-              {document.text ? (
-                <pre
-                  style={{
-                    whiteSpace: "pre-wrap",
-                    wordBreak: "break-word",
-                    background: "#0e1117",
-                    padding: "15px",
-                    borderRadius: "8px",
-                    lineHeight: "1.6",
-                    fontSize: "16px",
-                  }}
-                >
-                  {document.text}
-                </pre>
-              ) : (
-                <p>
-                  No OCR text detected.
-                </p>
-              )}
-            </div>
-          ))}
+                {document.text ? (
+                  <pre
+                    style={{
+                      marginTop: "14px",
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-word",
+                      background: "#0e1117",
+                      padding: "15px",
+                      borderRadius: "8px",
+                      lineHeight: "1.6",
+                      fontSize: "15px",
+                      color: "#cbd5e1",
+                    }}
+                  >
+                    {document.text}
+                  </pre>
+                ) : (
+                  <p style={{ marginTop: "10px", color: "#64748b" }}>No OCR text detected.</p>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

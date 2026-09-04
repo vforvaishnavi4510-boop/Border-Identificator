@@ -1,466 +1,453 @@
-import json
+from flask import Flask, request, jsonify
+from rapidocr import (
+    RapidOCR,
+    EngineType,
+    LangDet,
+    LangRec,
+    ModelType,
+    OCRVersion,
+)
+from PIL import Image
 import os
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import time
 
 
-import sys
-
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
-
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8")
-    
-from paddleocr import PaddleOCR
+app = Flask(__name__)
 
 
 # ============================================================
-# SETTINGS
+# RAPIDOCR CONFIGURATION
 # ============================================================
 
-HOST = "127.0.0.1"
-PORT = 8000
+ocr = RapidOCR(
+    params={
+
+        # ----------------------------------------------------
+        # GLOBAL SETTINGS
+        # ----------------------------------------------------
+
+        # We are scanning normal documents.
+        # Orientation classification is not required.
+        "Global.use_cls": False,
+
+        # Maximum input image size.
+        "Global.max_side_len": 1200,
 
 
-# ============================================================
-# LOAD PADDLEOCR ONCE
-# ============================================================
+        # ----------------------------------------------------
+        # TEXT DETECTION
+        # ----------------------------------------------------
 
-print("")
-print("==============================================")
-print(" STARTING PADDLEOCR SERVICE")
-print("==============================================")
-print("Loading PaddleOCR model...")
-print("Please wait...")
-print("")
+        "Det.engine_type": EngineType.ONNXRUNTIME,
+        "Det.lang_type": LangDet.EN,
+        "Det.model_type": ModelType.MOBILE,
+        "Det.ocr_version": OCRVersion.PPOCRV4,
+
+        # Do not allow very large images to reach the
+        # detector.
+        "Det.limit_side_len": 736,
+
+        # IMPORTANT:
+        # "max" means the image will be reduced when its
+        # longest side is larger than 736 pixels.
+        "Det.limit_type": "max",
+
+        # Faster detection mode.
+        "Det.score_mode": "fast",
 
 
-ocr = PaddleOCR(
-    lang="en",
-    use_doc_orientation_classify=False,
-    use_doc_unwarping=False,
-    use_textline_orientation=False,
+        # ----------------------------------------------------
+        # TEXT RECOGNITION
+        # ----------------------------------------------------
+
+        "Rec.engine_type": EngineType.ONNXRUNTIME,
+        "Rec.lang_type": LangRec.EN,
+        "Rec.model_type": ModelType.MOBILE,
+        "Rec.ocr_version": OCRVersion.PPOCRV4,
+
+
+        # ----------------------------------------------------
+        # CLASSIFICATION
+        # ----------------------------------------------------
+
+        "Cls.engine_type": EngineType.ONNXRUNTIME,
+        "Cls.lang_type": LangDet.CH,
+        "Cls.model_type": ModelType.MOBILE,
+        "Cls.ocr_version": OCRVersion.PPOCRV4,
+    }
 )
 
 
-print("")
-print("==============================================")
-print("PADDLEOCR READY")
-print("==============================================")
-print(f"OCR service running on http://{HOST}:{PORT}")
-print("Model will stay loaded.")
-print("Waiting for documents...")
-print("==============================================")
-print("")
+# ============================================================
+# HEALTH CHECK
+# ============================================================
+
+@app.route("/health", methods=["GET"])
+def health():
+
+    return jsonify({
+        "status": "ok",
+        "service": "RapidOCR",
+        "engine": "ONNX Runtime",
+        "model": "PP-OCRv4 Mobile English"
+    })
 
 
 # ============================================================
-# OCR FUNCTION
+# OCR ENDPOINT
 # ============================================================
 
-def perform_ocr(image_path):
+@app.route("/ocr", methods=["POST"])
+def perform_ocr():
 
-    print("")
-    print("=============================================")
-    print(" PROCESSING DOCUMENT")
-    print("==============================================")
+    start_total = time.time()
 
-    print("Image:")
-    print(image_path)
+    print()
+    print("=" * 60)
+    print("NEW OCR REQUEST")
+    print("=" * 60)
 
-    # --------------------------------------------------------
-    # CHECK IMAGE
-    # --------------------------------------------------------
+    try:
 
-    if not os.path.exists(image_path):
+        # ----------------------------------------------------
+        # GET IMAGE PATH
+        # ----------------------------------------------------
 
-        raise FileNotFoundError(
-            f"Image not found: {image_path}"
+        data = request.get_json()
+
+        if not data or "imagePath" not in data:
+
+            return jsonify({
+                "success": False,
+                "error": "imagePath is required"
+            }), 400
+
+        image_path = data["imagePath"]
+
+        print(f"Image: {image_path}")
+
+
+        # ----------------------------------------------------
+        # CHECK IMAGE FILE
+        # ----------------------------------------------------
+
+        if not os.path.exists(image_path):
+
+            return jsonify({
+                "success": False,
+                "error": "Image file not found"
+            }), 404
+
+        file_size = os.path.getsize(image_path)
+
+        print(
+            f"File size: {file_size / 1024:.1f} KB"
         )
 
-    # --------------------------------------------------------
-    # RUN PADDLEOCR
-    # --------------------------------------------------------
 
-    result = ocr.predict(
-        image_path
-    )
+        # ----------------------------------------------------
+        # OPEN IMAGE
+        # ----------------------------------------------------
 
-    texts = []
-    confidences = []
+        image = Image.open(image_path)
 
-    # --------------------------------------------------------
-    # EXTRACT OCR RESULTS
-    # --------------------------------------------------------
+        original_width, original_height = image.size
 
-    for page in result:
+        print(
+            f"Original image size: "
+            f"{original_width} x {original_height}"
+        )
 
-        try:
 
-            data = page.json
+        # ----------------------------------------------------
+        # RESIZE IMAGE
+        # ----------------------------------------------------
 
-            if callable(data):
-                data = data()
+        MAX_IMAGE_SIDE = 1200
 
-            if isinstance(data, str):
-                data = json.loads(data)
+        max_original_side = max(
+            original_width,
+            original_height
+        )
 
-        except Exception:
+        if max_original_side > MAX_IMAGE_SIDE:
 
-            try:
-                data = page.to_json()
+            scale = (
+                MAX_IMAGE_SIDE /
+                max_original_side
+            )
 
-                if isinstance(data, str):
-                    data = json.loads(data)
+            new_width = int(
+                original_width * scale
+            )
 
-            except Exception:
+            new_height = int(
+                original_height * scale
+            )
 
+            print(
+                f"Resizing image to: "
+                f"{new_width} x {new_height}"
+            )
+
+            image = image.resize(
+                (new_width, new_height),
+                Image.Resampling.LANCZOS
+            )
+
+        else:
+
+            print("No resize required")
+
+
+        # ----------------------------------------------------
+        # CREATE TEMP OCR IMAGE
+        # ----------------------------------------------------
+
+        base, extension = os.path.splitext(
+            image_path
+        )
+
+        temp_path = base + "_ocr.jpg"
+
+        image = image.convert("RGB")
+
+        image.save(
+            temp_path,
+            format="JPEG",
+            quality=90,
+            optimize=True
+        )
+
+
+        preprocess_time = (
+            time.time() - start_total
+        )
+
+        print(
+            f"Image preprocessing: "
+            f"{preprocess_time:.3f} seconds"
+        )
+
+
+        # ----------------------------------------------------
+        # RUN RAPIDOCR
+        # ----------------------------------------------------
+
+        print()
+        print("Running RapidOCR...")
+
+        ocr_start = time.time()
+
+        result = ocr(temp_path)
+
+        ocr_time = time.time() - ocr_start
+
+        print(
+            f"🔥 RapidOCR inference: "
+            f"{ocr_time:.3f} seconds"
+        )
+
+
+        # ----------------------------------------------------
+        # EXTRACT OCR RESULTS
+        # ----------------------------------------------------
+
+        texts = []
+        scores = []
+
+        if result is not None:
+
+            if hasattr(result, "txts"):
+
+                if result.txts:
+                    texts = result.txts
+
+            if hasattr(result, "scores"):
+
+                if result.scores:
+                    scores = result.scores
+
+
+        # ----------------------------------------------------
+        # CLEAN OCR TEXT
+        # ----------------------------------------------------
+
+        cleaned_texts = []
+
+        for text in texts:
+
+            if text is None:
                 continue
 
-        # ----------------------------------------------------
-        # FIND OCR DATA
-        # ----------------------------------------------------
+            text = str(text).strip()
 
-        if not isinstance(data, dict):
-            continue
+            if not text:
+                continue
 
-        # Some PaddleOCR versions return OCR information
-        # inside a "res" object.
+            cleaned_texts.append(text)
 
-        res = data.get("res", data)
 
-        # ----------------------------------------------------
-        # TEXT
-        # ----------------------------------------------------
-
-        rec_texts = res.get(
-            "rec_texts",
-            []
+        final_text = "\n".join(
+            cleaned_texts
         )
 
-        rec_scores = res.get(
-            "rec_scores",
-            []
+
+        # ----------------------------------------------------
+        # CALCULATE CONFIDENCE
+        # ----------------------------------------------------
+
+        if scores:
+
+            average_confidence = (
+                sum(scores) /
+                len(scores)
+            ) * 100
+
+        else:
+
+            average_confidence = 0
+
+
+        # ----------------------------------------------------
+        # TOTAL PROCESSING TIME
+        # ----------------------------------------------------
+
+        total_time = (
+            time.time() - start_total
         )
 
-        # ----------------------------------------------------
-        # SAVE TEXT
-        # ----------------------------------------------------
-
-        if rec_texts:
-
-            for text in rec_texts:
-
-                if not text:
-                    continue
-
-                text = str(text).strip()
-
-                if len(text) < 1:
-                    continue
-
-                texts.append(text)
 
         # ----------------------------------------------------
-        # SAVE CONFIDENCE
+        # PRINT RESULTS
         # ----------------------------------------------------
 
-        if rec_scores:
+        print()
+        print("-" * 60)
 
-            for score in rec_scores:
-
-                try:
-
-                    confidences.append(
-                        float(score)
-                    )
-
-                except Exception:
-
-                    pass
-
-    # ========================================================
-    # CALCULATE CONFIDENCE
-    # ========================================================
-
-    if confidences:
-
-        average_confidence = (
-            sum(confidences)
-            / len(confidences)
+        print(
+            f"Text regions detected: "
+            f"{len(cleaned_texts)}"
         )
 
-    else:
+        print(
+            f"Average confidence: "
+            f"{average_confidence:.1f}%"
+        )
 
-        average_confidence = 0
+        print(
+            f"Characters extracted: "
+            f"{len(final_text)}"
+        )
 
-    # ========================================================
-    # CLEAN TEXT
-    # ========================================================
+        print(
+            f"🔥 OCR TIME: "
+            f"{ocr_time:.3f} seconds"
+        )
 
-    cleaned_text = "\n".join(
-        texts
-    ).strip()
+        print(
+            f"🔥 TOTAL PROCESSING TIME: "
+            f"{total_time:.3f} seconds"
+        )
 
-    # ========================================================
-    # RESULT
-    # ========================================================
+        print("-" * 60)
 
-    output = {
+        print()
+        print("EXTRACTED TEXT:")
 
-        "success": True,
-
-        "text": cleaned_text,
-
-        "confidence":
-            average_confidence * 100,
-
-    }
-
-    print("")
-    print(" OCR RESULT")
-    print("----------------------------------------------")
-
-    print(
-        cleaned_text
-        if cleaned_text
-        else "No text detected."
-    )
-
-    print("----------------------------------------------")
-
-    print(
-        "Confidence:",
-        f"{average_confidence * 100:.2f}%"
-    )
-
-    print("==============================================")
-    print(" DOCUMENT OCR COMPLETED")
-    print("==============================================")
-    print("")
-
-    return output
+        print(final_text)
 
 
-# ============================================================
-# HTTP SERVER
-# ============================================================
-
-class OCRRequestHandler(
-    BaseHTTPRequestHandler
-):
-
-    # --------------------------------------------------------
-    # POST /ocr
-    # --------------------------------------------------------
-
-    def do_POST(self):
-
-        if self.path != "/ocr":
-
-            self.send_response(404)
-
-            self.end_headers()
-
-            return
+        # ----------------------------------------------------
+        # DELETE TEMP IMAGE
+        # ----------------------------------------------------
 
         try:
 
-            # ------------------------------------------------
-            # READ REQUEST
-            # ------------------------------------------------
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
 
-            content_length = int(
-                self.headers.get(
-                    "Content-Length",
-                    0
-                )
+        except Exception:
+            pass
+
+
+        # ----------------------------------------------------
+        # SEND RESPONSE TO NODE
+        # ----------------------------------------------------
+
+        return jsonify({
+
+            "success": True,
+
+            "text": final_text,
+
+            "confidence": round(
+                average_confidence,
+                2
+            ),
+
+            "regions": len(
+                cleaned_texts
+            ),
+
+            "ocrTime": round(
+                ocr_time,
+                3
+            ),
+
+            "totalTime": round(
+                total_time,
+                3
             )
 
-            body = self.rfile.read(
-                content_length
-            )
+        })
 
-            request_data = json.loads(
-                body.decode("utf-8")
-            )
 
-            image_path = request_data.get(
-                "imagePath"
-            )
+    except Exception as error:
 
-            # ------------------------------------------------
-            # CHECK PATH
-            # ------------------------------------------------
+        print()
+        print("❌ OCR ERROR:")
+        print(str(error))
 
-            if not image_path:
+        return jsonify({
 
-                raise ValueError(
-                    "imagePath was not provided"
-                )
+            "success": False,
 
-            # ------------------------------------------------
-            # RUN OCR
-            # ------------------------------------------------
+            "error": str(error)
 
-            result = perform_ocr(
-                image_path
-            )
-
-            # ------------------------------------------------
-            # SEND RESULT
-            # ------------------------------------------------
-
-            response = json.dumps(
-                result
-            ).encode("utf-8")
-
-            self.send_response(200)
-
-            self.send_header(
-                "Content-Type",
-                "application/json"
-            )
-
-            self.send_header(
-                "Content-Length",
-                str(len(response))
-            )
-
-            self.end_headers()
-
-            self.wfile.write(
-                response
-            )
-
-        except Exception as error:
-
-            print("")
-            print("OCR ERROR:")
-            print(error)
-            print("")
-
-            response = json.dumps({
-
-                "success": False,
-
-                "text": "",
-
-                "confidence": 0,
-
-                "message": str(error)
-
-            }).encode("utf-8")
-
-            self.send_response(500)
-
-            self.send_header(
-                "Content-Type",
-                "application/json"
-            )
-
-            self.send_header(
-                "Content-Length",
-                str(len(response))
-            )
-
-            self.end_headers()
-
-            self.wfile.write(
-                response
-            )
-
-    # --------------------------------------------------------
-    # GET /health
-    # --------------------------------------------------------
-
-    def do_GET(self):
-
-        if self.path == "/health":
-
-            response = json.dumps({
-
-                "success": True,
-
-                "status": "ready",
-
-                "service":
-                    "PaddleOCR"
-
-            }).encode("utf-8")
-
-            self.send_response(200)
-
-            self.send_header(
-                "Content-Type",
-                "application/json"
-            )
-
-            self.send_header(
-                "Content-Length",
-                str(len(response))
-            )
-
-            self.end_headers()
-
-            self.wfile.write(
-                response
-            )
-
-            return
-
-        self.send_response(404)
-
-        self.end_headers()
-
-    # --------------------------------------------------------
-    # REMOVE DEFAULT HTTP LOGGING
-    # --------------------------------------------------------
-
-    def log_message(
-        self,
-        format,
-        *args
-    ):
-
-        return
+        }), 500
 
 
 # ============================================================
-# START OCR SERVER
+# START SERVER
 # ============================================================
 
-server = HTTPServer(
-    (HOST, PORT),
-    OCRRequestHandler
-)
+if __name__ == "__main__":
 
-print(
-    " OCR SERVICE IS READY"
-)
+    print()
+    print("=" * 60)
+    print("🚀 RAPIDOCR SERVICE")
+    print("=" * 60)
 
-print(
-    "Waiting for Node.js requests..."
-)
+    print("OCR Engine: RapidOCR")
+    print("Runtime: ONNX Runtime")
+    print("Model: PP-OCRv4 Mobile English")
 
-print("")
+    print()
+    print("Optimizations:")
+    print("✔ Classification disabled")
+    print("✔ Detector limit_type = max")
+    print("✔ Detector limit_side_len = 736")
+    print("✔ Maximum input image = 1200px")
 
+    print()
+    print("Server: http://127.0.0.1:8000")
+    print("=" * 60)
+    print()
 
-try:
-
-    server.serve_forever()
-
-except KeyboardInterrupt:
-
-    print("")
-    print(
-        "Stopping OCR service..."
-    )
-
-finally:
-
-    server.server_close()
-
-    print(
-        "OCR service stopped."
+    app.run(
+        host="127.0.0.1",
+        port=8000,
+        debug=False,
+        threaded=True
     )
